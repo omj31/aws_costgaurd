@@ -2,7 +2,7 @@
 
 AWS CostGuard is a single-account AWS resource review dashboard. A Flask web app invokes an AWS Lambda scan, displays the scan results, and the Lambda stores a JSON report in a dedicated S3 bucket. The scanner is read-only for workload resources: it does not stop, resize, move, or delete EC2, EBS, or S3 resources.
 
-> **Project status:** The Flask-to-Lambda scan path, Lambda-to-S3 report write, and Lambda-to-SNS notification are implemented in this repository. Create the SNS topic/subscription and EventBridge schedule in AWS to activate notifications and daily scans. The dashboard displays the response from a fresh scan; it does not yet load the most recent scheduled report from S3 automatically. This is a single-account portfolio project, not a multi-tenant SaaS application.
+> **Project status:** The Flask-to-Lambda scan path, S3 report write, and SNS publish code are implemented. The deployed Lambda test currently reaches SNS but fails because `CostGuardLambdaExecutionRole` is missing `sns:Publish` permission on its configured topic; add the least-privilege policy below before expecting email notifications. Confirm the SNS email subscription as well. The daily EventBridge schedule is an optional AWS setup step and must be enabled in the account. The dashboard displays fresh on-demand scan results; it does not yet load scheduled reports from S3. This is a single-account portfolio project, not a multi-tenant SaaS application.
 
 ## What it does
 
@@ -17,22 +17,11 @@ AWS CostGuard is a single-account AWS resource review dashboard. A Flask web app
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    U[User] --> D[Flask web dashboard]
-    D -->|POST-like scan request| F[Flask /api/scan]
-    F -->|Synchronous invoke| L[AWS Lambda scanner]
-    L --> EC2[EC2 Describe APIs]
-    L --> EBS[EBS Describe APIs]
-    L --> S3W[S3 bucket and object listing]
-    L --> CW[CloudWatch CPU metrics]
-    L -->|JSON report| S3R[(Private S3 results bucket)]
-    L -->|Summary after each scan| SNS[SNS topic]
-    SNS -->|Confirmed subscription| MAIL[User email]
-    L -->|Scan response| F
-    F --> D
-    EB[EventBridge Scheduler - daily] -->|Scheduled invoke| L
-```
+![AWS CostGuard architecture](docs/costguard-architecture.png)
+
+The diagram reflects the flow in this repository. For a fresh dashboard scan, Flask synchronously invokes Lambda; Lambda reads EC2, EBS, S3, and CloudWatch data, writes the JSON report to the configured results bucket, publishes an SNS message, and returns the scan response to Flask. The Lambda writes the report **before** publishing to SNS, so an invocation can fail with an SNS permission error even though its report was already stored in S3.
+
+The daily EventBridge Scheduler is supported by the Lambda handler but is not created by the application. Configure and enable it in AWS to run unattended daily scans. The editable vector source for the diagram is [docs/costguard-architecture.svg](docs/costguard-architecture.svg).
 
 ## Repository layout
 
@@ -41,6 +30,9 @@ flowchart LR
 ├── app.py                   # Flask app and Lambda invoke endpoint
 ├── lambda_function.py       # EC2/EBS/S3 scanner and report writer
 ├── lambda_iam_policy.json   # Starting inline policy for the Lambda role
+├── docs/
+│   ├── costguard-architecture.png  # Architecture diagram used in this README
+│   └── costguard-architecture.svg  # Editable vector source
 ├── requirements.txt         # Local Flask and boto3 dependencies
 ├── templates/
 │   └── index.html           # Dashboard markup and client-side rendering
@@ -115,7 +107,9 @@ In the Lambda console, create a function from scratch with a supported Python ru
 
 ### Create the SNS topic and subscribe the user
 
-In the SNS console, create a **Standard** topic named `costguard-notifications` in the same region as the Lambda function. Copy its ARN into the Lambda `SNS_TOPIC_ARN` environment variable and into `lambda_iam_policy.json`, then update the Lambda execution role policy.
+In the SNS console, create or use a **Standard** topic in the same region as the Lambda function. Copy its exact ARN into the Lambda `SNS_TOPIC_ARN` environment variable and the `sns:Publish` resource in `lambda_iam_policy.json`, then update the `CostGuardLambdaExecutionRole` execution role policy. The deployed function shown in the current test is using a topic named `cost`; the policy resource must match that deployed topic ARN exactly. Confirm the email subscription from the SNS confirmation email.
+
+If Lambda returns `AuthorizationError` for `SNS:Publish`, attach an inline policy to **IAM → Roles → CostGuardLambdaExecutionRole** with `Action: sns:Publish` and `Resource` set to the exact value of `SNS_TOPIC_ARN`. The current test deployment uses the topic named `cost` in `ap-south-1`; copy its full ARN from the SNS console. Do not attach this permission to the Flask user's role: the denied principal in the error is the Lambda execution role.
 
 Create an **Email** subscription for the recipient. The recipient must open the AWS subscription confirmation email and confirm the subscription before notifications arrive. Keep the topic private; the email contains scan counts, an S3 report location, and approximate savings, not AWS credentials.
 
@@ -243,7 +237,8 @@ If Lambda invocation fails, Flask returns HTTP `502` with an error message.
 | Flask returns `502` | Check the Lambda ARN/region, Flask identity's `lambda:InvokeFunction` permission, and Lambda execution logs. |
 | Lambda reports `AccessDenied` | Check the Lambda execution role and replace the results bucket placeholder in its inline policy. |
 | Lambda reports missing `RESULTS_BUCKET` | Add the environment variable to the Lambda configuration and deploy/save the settings. |
-| Lambda reports missing SNS topic configuration | Set `SNS_TOPIC_ARN`, update the Lambda role policy, and deploy the function. |
+| Lambda reports missing SNS topic configuration | Set `SNS_TOPIC_ARN` to the topic ARN, allow `sns:Publish` for that exact ARN on the Lambda execution role, and deploy the code if it changed. |
+| Lambda returns `AuthorizationError` for `SNS:Publish` | Add the identity-based permission to `CostGuardLambdaExecutionRole` as described in the SNS setup section; verify the policy resource and `SNS_TOPIC_ARN` match exactly. |
 | Scan succeeds but no email arrives | Confirm the SNS email subscription in the recipient's inbox and verify the topic ARN/region. |
 | EventBridge scan does not run | Check the schedule state, time zone, target ARN, and Scheduler role's `lambda:InvokeFunction` permission. |
 | Lambda times out | Check invocation duration and S3 object count; increase the timeout only after reviewing logs. |
