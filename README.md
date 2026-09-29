@@ -2,7 +2,7 @@
 
 AWS CostGuard is a single-account AWS resource review dashboard. A Flask web app invokes an AWS Lambda scan, displays the scan results, and the Lambda stores a JSON report in a dedicated S3 bucket. The scanner is read-only for workload resources: it does not stop, resize, move, or delete EC2, EBS, or S3 resources.
 
-> **Project status:** The Flask-to-Lambda scan path, S3 report write, and SNS publish code are implemented. The deployed Lambda test currently reaches SNS but fails because `CostGuardLambdaExecutionRole` is missing `sns:Publish` permission on its configured topic; add the least-privilege policy below before expecting email notifications. Confirm the SNS email subscription as well. The daily EventBridge schedule is an optional AWS setup step and must be enabled in the account. The dashboard displays fresh on-demand scan results; it does not yet load scheduled reports from S3. This is a single-account portfolio project, not a multi-tenant SaaS application.
+> **Project status:** The Flask-to-Lambda scan path, S3 report write, and SNS notifications are implemented. The screenshots below show a successful dashboard scan, a report saved to S3, and a delivered daily scan email. EventBridge Scheduler is enabled in the current AWS setup; when deploying elsewhere, create the schedule and its Lambda invoke role using the steps below. The dashboard displays fresh on-demand scan results; it does not yet load scheduled reports from S3. This is a single-account portfolio project, not a multi-tenant SaaS application.
 
 ## What it does
 
@@ -22,6 +22,21 @@ AWS CostGuard is a single-account AWS resource review dashboard. A Flask web app
 The diagram reflects the flow in this repository. For a fresh dashboard scan, Flask synchronously invokes Lambda; Lambda reads EC2, EBS, S3, and CloudWatch data, writes the JSON report to the configured results bucket, publishes an SNS message, and returns the scan response to Flask. The Lambda writes the report **before** publishing to SNS, so an invocation can fail with an SNS permission error even though its report was already stored in S3.
 
 The daily EventBridge Scheduler is supported by the Lambda handler but is not created by the application. Configure and enable it in AWS to run unattended daily scans. The editable vector source for the diagram is [docs/costguard-architecture.svg](docs/costguard-architecture.svg).
+
+## Output screenshots
+
+These screenshots show the deployed project output and AWS-side evidence from a single-account run.
+
+<table>
+  <tr>
+    <td width="50%"><strong>Dashboard scan results</strong><br><img src="docs/dashboard_output.png" alt="AWS CostGuard dashboard showing scanned resources and a finding" width="100%"></td>
+    <td width="50%"><strong>Daily SNS email</strong><br><img src="docs/email_output.png" alt="Email notification from a scheduled daily CostGuard scan" width="100%"></td>
+  </tr>
+  <tr>
+    <td width="50%"><strong>Lambda scanner</strong><br><img src="docs/lambda.png" alt="CostGuard Lambda function and scanner code in AWS Console" width="100%"></td>
+    <td width="50%"><strong>S3 scan reports</strong><br><img src="docs/s3.png" alt="JSON scan reports stored in the CostGuard S3 results bucket" width="100%"></td>
+  </tr>
+</table>
 
 ## Repository layout
 
