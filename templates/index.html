@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#101d2e">
+  <title>AWS CostGuard · Cloud optimization</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="#overview" aria-label="AWS CostGuard home"><span class="brand-mark">☁</span><span>AWS <b>CostGuard</b><small>Cloud waste detection &amp;<br>optimization advisor</small></span></a>
+    <div class="nav-label">WORKSPACE</div>
+    <nav class="nav-list" aria-label="Main navigation">
+      <a class="nav active" href="#overview"><span>⌂</span>Dashboard</a>
+      <a class="nav" href="#resources" data-filter-link="EC2"><span>▣</span>EC2 analysis</a>
+      <a class="nav" href="#resources" data-filter-link="EBS"><span>▤</span>EBS analysis</a>
+      <a class="nav" href="#resources" data-filter-link="S3"><span>◈</span>S3 analysis</a>
+    </nav>
+    <div class="sidebar-bottom"><div class="live-dot"></div><span>AWS connection<br><b>Ready to scan</b></span><span class="aws-wordmark">aws</span></div>
+  </aside>
+
+  <main class="main" id="overview">
+    <header class="topbar">
+      <div class="heading"><div class="eyebrow"><span class="live-dot"></span> CLOUD COST INTELLIGENCE</div><h1>Good day, <span>cloud team.</span></h1><p>See what’s running, spot waste, and make every AWS dollar count.</p></div>
+      <div class="header-actions"><div class="scan-meta"><span>LAST SCAN <i id="scanStatus" class="scan-state">READY</i></span><b id="lastScan">Not scanned yet</b></div><button id="scanButton" class="scan-btn" onclick="scanAWS()"><span>↻</span> Scan AWS</button></div>
+    </header>
+
+    <section class="cards" aria-label="Resource overview">
+      <article class="metric-card blue"><div class="metric-top"><span>Total resources</span><span class="metric-icon">▤</span></div><div id="totalResources" class="metric-value">—</div><div id="resourceBreakdown" class="metric-foot">Run a scan to get started</div></article>
+      <article class="metric-card red"><div class="metric-top"><span>Potential waste</span><span class="metric-icon">⚠</span></div><div id="potentialWaste" class="metric-value">—</div><div class="metric-foot">Resources need attention</div></article>
+      <article class="metric-card green"><div class="metric-top"><span>Suggestions</span><span class="metric-icon">✳</span></div><div id="suggestions" class="metric-value">—</div><div class="metric-foot">Actionable recommendations</div></article>
+      <article class="metric-card violet"><div class="metric-top"><span>Est. monthly savings</span><span class="metric-icon">₹</span></div><div id="monthlySavings" class="metric-value">—</div><div class="metric-foot">Approximate · review estimate notes</div></article>
+    </section>
+
+    <div class="content-grid" id="resources">
+      <section class="panel resource-panel">
+        <div class="panel-heading"><div><div class="eyebrow">RESOURCE ANALYSIS</div><h2>Detected cost waste</h2></div><span class="count-pill" id="issueCount">0 findings</span></div>
+        <div class="tabs" role="tablist" aria-label="Filter resources"><button class="tab active" data-filter="All">All <span id="allCount">0</span></button><button class="tab" data-filter="EC2">EC2 <span id="ec2TabCount">0</span></button><button class="tab" data-filter="EBS">EBS <span id="ebsTabCount">0</span></button><button class="tab" data-filter="S3">S3 <span id="s3TabCount">0</span></button></div>
+        <div class="table-wrap"><table><thead><tr><th>RESOURCE</th><th>DETAILS</th><th>FINDING</th><th>RECOMMENDATION</th></tr></thead><tbody id="resourceTable"><tr><td colspan="4" class="empty"><span class="empty-icon">⌁</span><b>Your scan starts here</b><span>Connect to AWS and scan to surface unused resources and savings opportunities.</span><button class="text-button" onclick="scanAWS()">Scan my resources →</button></td></tr></tbody></table></div>
+        <div class="table-foot"><span><i class="live-dot"></i> Data from your AWS account</span><span id="tableSummary">EC2 · EBS · S3</span></div>
+      </section>
+      <aside class="side-stack">
+        <section class="panel insight-panel"><div class="panel-heading compact"><div><div class="eyebrow">AT A GLANCE</div><h2>Key insights</h2></div><span class="bulb">✧</span></div><div id="insights" class="insights"><div class="empty-small">Run a scan to see what your AWS footprint is telling you.</div></div><div class="savings-callout"><span class="callout-icon">↗</span><span><b>Estimated savings are directional.</b><small id="savingsNote">Confirm rates, storage class pricing, and lifecycle costs before acting.</small></span></div></section>
+        <section class="panel process-panel"><div class="eyebrow">YOUR WORKFLOW</div><h2>How CostGuard works</h2><ol class="steps"><li><span>01</span>Collect resource data</li><li><span>02</span>Analyze usage &amp; storage</li><li><span>03</span>Find optimization opportunities</li><li><span>04</span>Review recommendations</li></ol></section>
+      </aside>
+    </div>
+
+    <footer class="footer"><span> AWS CostGuard <span class="footer-sep">/</span> Cloud spend, made clearer.</span><span>Built for visibility. You stay in control.</span></footer>
+  </main>
+
+<script>
+let currentResources = [];
+let activeFilter = 'All';
+
+async function scanAWS() {
+  const button = document.getElementById('scanButton');
+  const status = document.getElementById('scanStatus');
+  button.disabled = true;
+  button.innerHTML = '<span class="spin">↻</span> Scanning';
+  status.innerText = 'Scanning';
+  try {
+    const response = await fetch('/api/scan');
+    const data = await response.json();
+    if (!response.ok || !data.success) throw new Error(data.error || 'The scan could not be completed.');
+    renderDashboard(data);
+    button.innerHTML = '<span>✓</span> Scan complete';
+    status.innerText = 'Complete';
+    document.getElementById('lastScan').innerText = `${new Date(data.scanned_at || Date.now()).toLocaleString([], {dateStyle:'medium',timeStyle:'short'})} · ${escapeHtml(data.region || '')}`;
+    setTimeout(() => { button.innerHTML = '<span>↻</span> Scan AWS'; }, 1800);
+  } catch (error) {
+    status.innerText = 'Error';
+    document.getElementById('resourceTable').innerHTML = `<tr><td colspan="4" class="error">${escapeHtml(error.message)}</td></tr>`;
+    button.innerHTML = '<span>↻</span> Try again';
+  } finally { button.disabled = false; }
+}
+
+function renderDashboard(data) {
+  currentResources = data.resources || [];
+  const count = type => currentResources.filter(r => r.type === type).length;
+  document.getElementById('totalResources').innerText = data.total;
+  document.getElementById('potentialWaste').innerText = data.waste;
+  document.getElementById('suggestions').innerText = data.suggestions;
+  document.getElementById('monthlySavings').innerText = `₹${Number(data.monthly_savings_estimate_inr || 0).toLocaleString('en-IN', {maximumFractionDigits:2})}`;
+  document.getElementById('savingsNote').innerText = data.savings_estimate_note || 'Approximate estimate; confirm actual AWS rates before acting.';
+  document.getElementById('resourceBreakdown').innerText = `EC2 ${count('EC2')}  ·  EBS ${count('EBS')}  ·  S3 ${count('S3')}`;
+  document.getElementById('ec2TabCount').innerText = count('EC2');
+  document.getElementById('ebsTabCount').innerText = count('EBS');
+  document.getElementById('s3TabCount').innerText = count('S3');
+  document.getElementById('allCount').innerText = currentResources.length;
+  document.getElementById('issueCount').innerText = `${data.waste} finding${data.waste === 1 ? '' : 's'}`;
+  document.getElementById('tableSummary').innerText = `${currentResources.length} resources analyzed`;
+  renderTable(); renderInsights(currentResources);
+}
+
+function renderTable() {
+  const filtered = activeFilter === 'All' ? currentResources : currentResources.filter(r => r.type === activeFilter);
+  const table = document.getElementById('resourceTable');
+  if (!filtered.length) { table.innerHTML = `<tr><td colspan="4" class="empty"><span class="empty-icon">✓</span><b>No ${activeFilter === 'All' ? '' : activeFilter + ' '}resources found</b><span>There are no resources to show for this filter.</span></td></tr>`; return; }
+  table.innerHTML = filtered.map(r => {
+    const risk = ['Underutilized','Stopped'].includes(r.issue) ? 'danger' : ['Unused','Old Objects'].includes(r.issue) ? 'warning' : 'normal';
+    const icon = {EC2:'▣',EBS:'▤',S3:'◈'}[r.type] || '◌';
+    const state = r.type === 'EC2' && r.cpu !== null ? `${escapeHtml(r.state)} · ${escapeHtml(r.cpu)}% CPU` : escapeHtml(r.state || '—');
+    const savings = r.estimated_monthly_savings_inr == null ? '—' : `₹${Number(r.estimated_monthly_savings_inr).toLocaleString('en-IN', {maximumFractionDigits:2})}/mo`;
+    const extra = r.type === 'S3' && r.old_objects ? `${r.old_objects} old objects` : savings;
+    return `<tr><td><div class="resource-cell"><span class="resource-icon ${r.type.toLowerCase()}">${icon}</span><span><b>${escapeHtml(r.name || r.type)}</b><small>${escapeHtml(r.type)} · ${escapeHtml(r.id)}</small></span></div></td><td>${escapeHtml(r.details)}<small class="cell-sub">${state}</small><small class="cell-sub">${escapeHtml(extra)}</small></td><td><span class="badge ${risk}"><i></i>${escapeHtml(r.issue)}</span></td><td class="recommendation">${escapeHtml(r.recommendation)}</td></tr>`;
+  }).join('');
+}
+
+function renderInsights(resources) {
+  const groups = [
+    {type:'EC2', issue:'Underutilized', icon:'▣', text:'instances show low CPU utilization'},
+    {type:'EBS', issue:'Unused', icon:'▤', text:'volumes are unattached'},
+    {type:'S3', issue:'Old Objects', icon:'◈', text:'buckets contain older objects'},
+    {type:'EC2', issue:'Stopped', icon:'◷', text:'instances are stopped'}
+  ];
+  const hits = groups.map(g => ({...g, n:resources.filter(r => r.type === g.type && r.issue === g.issue).length})).filter(g => g.n);
+  document.getElementById('insights').innerHTML = hits.length ? hits.map(g => `<div class="insight-row"><span class="insight-icon ${g.type.toLowerCase()}">${g.icon}</span><span><b>${g.n} ${g.type}</b><small>${g.text}</small></span><span class="insight-arrow">↗</span></div>`).join('') : `<div class="clear-state"><span>✓</span><b>No flagged resources</b><small>Your latest scan didn’t find obvious waste.</small></div>`;
+}
+
+document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => {
+  document.querySelectorAll('.tab').forEach(item => item.classList.remove('active'));
+  tab.classList.add('active'); activeFilter = tab.dataset.filter; renderTable();
+}));
+document.querySelectorAll('[data-filter-link]').forEach(link => link.addEventListener('click', () => {
+  activeFilter = link.dataset.filter;
+  document.querySelectorAll('.tab').forEach(tab => tab.classList.toggle('active', tab.dataset.filter === activeFilter));
+  renderTable();
+}));
+document.querySelectorAll('.nav').forEach(link => link.addEventListener('click', () => {
+  document.querySelectorAll('.nav').forEach(item => item.classList.remove('active')); link.classList.add('active');
+}));
+function escapeHtml(value) { return String(value ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;'); }
+</script>
+</body>
+</html>
