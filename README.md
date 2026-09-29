@@ -2,7 +2,7 @@
 
 AWS CostGuard is a single-account AWS resource review dashboard. A Flask web app invokes an AWS Lambda scan, displays the scan results, and the Lambda stores a JSON report in a dedicated S3 bucket. The scanner is read-only for workload resources: it does not stop, resize, move, or delete EC2, EBS, or S3 resources.
 
-> **Project status:** The Flask-to-Lambda scan path and Lambda-to-S3 report write are implemented in this repository. The EventBridge schedule is an optional AWS setup step. The dashboard currently displays the response from a fresh scan; it does not yet load the most recent scheduled report from S3 automatically. This is a single-account portfolio project, not a multi-tenant SaaS application.
+> **Project status:** The Flask-to-Lambda scan path, Lambda-to-S3 report write, and Lambda-to-SNS notification are implemented in this repository. Create the SNS topic/subscription and EventBridge schedule in AWS to activate notifications and daily scans. The dashboard displays the response from a fresh scan; it does not yet load the most recent scheduled report from S3 automatically. This is a single-account portfolio project, not a multi-tenant SaaS application.
 
 ## What it does
 
@@ -11,8 +11,9 @@ AWS CostGuard is a single-account AWS resource review dashboard. A Flask web app
 - Lists S3 buckets and checks object age, including paginated object listings.
 - Returns resource counts, issues, recommendations, scan time, and configured AWS region.
 - Writes each Lambda scan report to a dated S3 key under `scans/`.
+- Publishes a summary notification to an SNS topic after every successful scan.
 - Shows an approximate monthly savings estimate for unattached EBS and older S3 objects.
-- Supports an optional daily EventBridge Scheduler trigger for unattended scans.
+- Supports a daily EventBridge Scheduler trigger for unattended scans.
 
 ## Architecture
 
@@ -26,9 +27,11 @@ flowchart LR
     L --> S3W[S3 bucket and object listing]
     L --> CW[CloudWatch CPU metrics]
     L -->|JSON report| S3R[(Private S3 results bucket)]
+    L -->|Summary after each scan| SNS[SNS topic]
+    SNS -->|Confirmed subscription| MAIL[User email]
     L -->|Scan response| F
     F --> D
-    EB[EventBridge Scheduler - optional] -->|Scheduled invoke| L
+    EB[EventBridge Scheduler - daily] -->|Scheduled invoke| L
 ```
 
 ## Repository layout
@@ -80,6 +83,8 @@ REPLACE_WITH_RESULTS_BUCKET
 
 with the name of the reports bucket. The policy grants EC2 and CloudWatch read actions, S3 bucket listing, and `s3:PutObject` only for the `scans/` prefix in the reports bucket. `s3:ListBucket` is currently broad because the scanner discovers and lists workload buckets dynamically; narrow it to named bucket ARNs if you want to scan only selected buckets.
 
+Also replace `REPLACE_WITH_SNS_TOPIC_ARN` with the SNS topic ARN you create below. The policy grants `sns:Publish` only to that topic.
+
 The Lambda execution role is different from the credentials used by the local Flask process. AWS explains the purpose of execution roles in [Defining Lambda function permissions](https://docs.aws.amazon.com/lambda/latest/dg/lambda-intro-execution-role.html).
 
 ### Create and configure the Lambda function
@@ -102,10 +107,17 @@ In the Lambda console, create a function from scratch with a supported Python ru
    | `RESULTS_BUCKET` | `my-costguard-scan-results` | Required destination for JSON scan reports |
    | `COSTGUARD_EBS_INR_PER_GB_MONTH` | `7` | Approximate EBS planning rate used by the estimate |
    | `COSTGUARD_S3_INR_SAVING_PER_GB_MONTH` | `1` | Approximate potential S3 tier difference used by the estimate |
+   | `SNS_TOPIC_ARN` | `arn:aws:sns:ap-south-1:ACCOUNT_ID:costguard-notifications` | Required SNS topic for scan-complete notifications |
 
    Lambda provides `AWS_REGION` automatically. The code uses that region for EC2, CloudWatch, and the S3 client unless `AWS_DEFAULT_REGION` is supplied.
 
-6. In the **Test** tab, create a test event with `{}` and run it. Confirm the response contains `success: true`, then confirm a JSON file appears in the reports bucket under `scans/`.
+6. In the **Test** tab, create a test event with `{}` and run it. Confirm the response contains `success: true`, a JSON file appears in the reports bucket under `scans/`, and the SNS subscriber receives a message.
+
+### Create the SNS topic and subscribe the user
+
+In the SNS console, create a **Standard** topic named `costguard-notifications` in the same region as the Lambda function. Copy its ARN into the Lambda `SNS_TOPIC_ARN` environment variable and into `lambda_iam_policy.json`, then update the Lambda execution role policy.
+
+Create an **Email** subscription for the recipient. The recipient must open the AWS subscription confirmation email and confirm the subscription before notifications arrive. Keep the topic private; the email contains scan counts, an S3 report location, and approximate savings, not AWS credentials.
 
 ## 2. Allow the local Flask app to invoke Lambda
 
@@ -164,15 +176,20 @@ Open [http://127.0.0.1:5000](http://127.0.0.1:5000), then select **Scan AWS**. F
 
 ## 4. Optional: schedule daily scans
 
-After the manual Lambda test succeeds, create a recurring schedule in **Amazon EventBridge Scheduler**:
+After the SNS subscription and manual Lambda test succeed, create the daily schedule in **Amazon EventBridge Scheduler**:
 
-1. Create a recurring schedule (for example, once per day).
-2. Set the time zone you want, such as `Asia/Kolkata`.
-3. Choose the CostGuard Lambda function as the target and use `{}` as the input.
-4. Let the console create an execution role, or create one with permission to invoke only this function.
+1. Create a recurring schedule using `cron(0 9 * * ? *)` for a daily 9:00 AM scan.
+2. Set the time zone to `Asia/Kolkata`.
+3. Choose the CostGuard Lambda function as the target and set the input to:
+
+   ```json
+   {"source":"eventbridge-daily"}
+   ```
+
+4. Let the console create an execution role, or create one with `lambda:InvokeFunction` permission for only this function.
 5. Enable the schedule and check the Lambda CloudWatch Logs and S3 reports after its next run.
 
-EventBridge Scheduler supports a selected time zone and Lambda as a target. See [Schedule types](https://docs.aws.amazon.com/scheduler/latest/UserGuide/schedule-types.html) and [Scheduler setup](https://docs.aws.amazon.com/scheduler/latest/UserGuide/setting-up.html).
+EventBridge Scheduler supports a selected time zone and Lambda as a target. See [Schedule types](https://docs.aws.amazon.com/scheduler/latest/UserGuide/schedule-types.html) and [Scheduler setup](https://docs.aws.amazon.com/scheduler/latest/UserGuide/setting-up.html). Both dashboard-triggered scans and scheduled scans publish to the same SNS topic; the notification labels the trigger as dashboard or scheduled daily.
 
 **Current dashboard limitation:** a scheduled invocation saves its result to S3, but the current dashboard does not fetch the latest saved report. The dashboard's **Scan AWS** button always requests a fresh scan. To show scheduled results in the UI, add a Flask endpoint that reads the latest S3 report and connect the dashboard to that endpoint.
 
@@ -226,6 +243,9 @@ If Lambda invocation fails, Flask returns HTTP `502` with an error message.
 | Flask returns `502` | Check the Lambda ARN/region, Flask identity's `lambda:InvokeFunction` permission, and Lambda execution logs. |
 | Lambda reports `AccessDenied` | Check the Lambda execution role and replace the results bucket placeholder in its inline policy. |
 | Lambda reports missing `RESULTS_BUCKET` | Add the environment variable to the Lambda configuration and deploy/save the settings. |
+| Lambda reports missing SNS topic configuration | Set `SNS_TOPIC_ARN`, update the Lambda role policy, and deploy the function. |
+| Scan succeeds but no email arrives | Confirm the SNS email subscription in the recipient's inbox and verify the topic ARN/region. |
+| EventBridge scan does not run | Check the schedule state, time zone, target ARN, and Scheduler role's `lambda:InvokeFunction` permission. |
 | Lambda times out | Check invocation duration and S3 object count; increase the timeout only after reviewing logs. |
 | EC2 CPU says `Monitoring` | CloudWatch may not have recent datapoints, or the role may lack `cloudwatch:GetMetricStatistics`. |
 | S3 bucket says `Unable to analyze` | Check `s3:ListBucket` permission and whether the function can list objects in that bucket/region. |

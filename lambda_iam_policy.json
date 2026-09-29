@@ -25,6 +25,12 @@
       "Effect": "Allow",
       "Action": "s3:PutObject",
       "Resource": "arn:aws:s3:::REPLACE_WITH_RESULTS_BUCKET/scans/*"
+    },
+    {
+      "Sid": "PublishCostGuardScanNotifications",
+      "Effect": "Allow",
+      "Action": "sns:Publish",
+      "Resource": "REPLACE_WITH_SNS_TOPIC_ARN"
     }
   ]
 }

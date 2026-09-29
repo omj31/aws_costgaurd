@@ -14,6 +14,7 @@ import boto3
 
 AWS_REGION = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "ap-south-1"))
 RESULTS_BUCKET = os.environ["RESULTS_BUCKET"]
+SNS_TOPIC_ARN = os.getenv("SNS_TOPIC_ARN", "")
 EBS_MONTHLY_INR_PER_GB = float(os.getenv("COSTGUARD_EBS_INR_PER_GB_MONTH", "7"))
 S3_MONTHLY_INR_SAVING_PER_GB = float(
     os.getenv("COSTGUARD_S3_INR_SAVING_PER_GB_MONTH", "1")
@@ -22,6 +23,7 @@ S3_MONTHLY_INR_SAVING_PER_GB = float(
 ec2 = boto3.client("ec2", region_name=AWS_REGION)
 cloudwatch = boto3.client("cloudwatch", region_name=AWS_REGION)
 s3 = boto3.client("s3", region_name=AWS_REGION)
+sns = boto3.client("sns", region_name=AWS_REGION)
 
 
 def scan_ec2():
@@ -207,12 +209,17 @@ def build_report():
 
 
 def lambda_handler(event, context):
-    """Scan resources, persist a JSON report to S3, and return the report."""
+    """Scan resources, save a report, notify SNS subscribers, and return it."""
+    if not SNS_TOPIC_ARN:
+        raise RuntimeError("Set SNS_TOPIC_ARN to the CostGuard SNS topic ARN.")
+
     report = build_report()
     timestamp = datetime.now(timezone.utc)
     report_key = f"scans/{timestamp:%Y/%m/%d}/{timestamp:%H%M%S}-{context.aws_request_id}.json"
+    scan_source = (event or {}).get("source", "manual-or-unspecified")
     report["report_bucket"] = RESULTS_BUCKET
     report["report_key"] = report_key
+    report["scan_source"] = scan_source
 
     s3.put_object(
         Bucket=RESULTS_BUCKET,
@@ -221,4 +228,34 @@ def lambda_handler(event, context):
         ContentType="application/json; charset=utf-8",
         ServerSideEncryption="AES256",
     )
+
+    findings = {}
+    for resource in report["resources"]:
+        issue = resource["issue"]
+        if issue in {"Underutilized", "Unused", "Old Objects", "Stopped"}:
+            findings[issue] = findings.get(issue, 0) + 1
+
+    source_label = "scheduled daily" if scan_source == "eventbridge-daily" else "dashboard"
+    subject = f"AWS CostGuard {source_label} scan: {report['waste']} finding(s)"
+    message_lines = [
+        "AWS CostGuard scan complete",
+        f"Scan trigger: {source_label}",
+        f"Time (UTC): {report['scanned_at']}",
+        f"Region: {report['region']}",
+        f"Resources analyzed: {report['total']}",
+        f"Potential findings: {report['waste']}",
+        f"Estimated monthly savings: INR {report['monthly_savings_estimate_inr']}",
+        "Finding counts: " + (
+            ", ".join(f"{issue}: {count}" for issue, count in sorted(findings.items()))
+            if findings else "No flagged resources"
+        ),
+        f"Report: s3://{RESULTS_BUCKET}/{report_key}",
+        "Savings are planning estimates. Review the report and verify actual AWS rates before acting.",
+    ]
+    sns.publish(
+        TopicArn=SNS_TOPIC_ARN,
+        Subject=subject[:100],
+        Message="\n".join(message_lines),
+    )
+    report["notification"] = "published"
     return report
